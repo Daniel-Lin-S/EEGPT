@@ -77,19 +77,6 @@ class LitEEGPTCausal(pl.LightningModule):
         self.loss_fn        = torch.nn.CrossEntropyLoss()
         self.running_scores = {"train":[], "valid":[], "test":[]}
         self.is_sanity=True
-        
-    def mixup_data(self, x, y, alpha=None):
-        # 随机选择另一个样本来混合数据
-        
-        lam = torch.rand(1).to(x) if alpha is None else alpha
-        lam = torch.max(lam, 1 - lam)
-
-        batch_size = x.size(0)
-        index = torch.randperm(batch_size)
-        mixed_x = lam * x + (1 - lam) * x[index, :]
-        mixed_y = lam * y + (1 - lam) * y[index]
-
-        return mixed_x, mixed_y
     
     def forward(self, x):
         # print(x.shape) # B, C, T
@@ -134,6 +121,7 @@ class LitEEGPTCausal(pl.LightningModule):
     def on_validation_epoch_start(self) -> None:
         self.running_scores["valid"]=[]
         return super().on_validation_epoch_start()
+
     def on_validation_epoch_end(self) -> None:
         if self.is_sanity:
             self.is_sanity=False
@@ -153,7 +141,7 @@ class LitEEGPTCausal(pl.LightningModule):
         for key, value in results.items():
             self.log('valid_'+key, value, on_epoch=True, on_step=False, sync_dist=True)
         return super().on_validation_epoch_end()
-    
+
     def validation_step(self, batch, batch_idx):
         # training_step defined the train loop.
         # It is independent of forward
@@ -172,7 +160,7 @@ class LitEEGPTCausal(pl.LightningModule):
         self.running_scores["valid"].append((label.clone().detach().cpu(), y_score.clone().detach().cpu()))
 
         return loss
-    
+
     def configure_optimizers(self):
         
         optimizer = torch.optim.AdamW(

@@ -156,18 +156,41 @@ def sample(batch_size=10, n_class=4):
         ret.append(res[i])
     return ret
 
-def temporal_interpolation(x, desired_sequence_length, mode='nearest', use_avg=True):
-    # print(x.shape)
-    # squeeze and unsqueeze because these are done before batching
+def temporal_interpolation(
+        x: torch.Tensor,
+        desired_sequence_length: int,
+        mode: str='nearest',
+        use_avg: bool=True
+    ) -> torch.Tensor:
+    """
+    Interpolates the input tensor to a desired sequence length.
+
+    Parameters
+    ----------
+    x : torch.Tensor
+        Input tensor of shape (B, C, T) or (C, T), where B is batch size,
+        C is number of channels, and T is sequence length.
+    desired_sequence_length : int
+        The desired sequence length to interpolate to.
+    mode : str, optional
+        The interpolation mode. Default is 'nearest'.
+    use_avg : bool, optional
+        Whether to normalise the input tensor by subtracting the mean.
+        Default is True.
+    """
     if use_avg:
         x = x - torch.mean(x, dim=-2, keepdim=True)
+
     if len(x.shape) == 2:
-        return torch.nn.functional.interpolate(x.unsqueeze(0), desired_sequence_length, mode=mode).squeeze(0)
+        return torch.nn.functional.interpolate(
+            x.unsqueeze(0), desired_sequence_length, mode=mode).squeeze(0)
     # Supports batch dimension
     elif len(x.shape) == 3:
         return torch.nn.functional.interpolate(x, desired_sequence_length, mode=mode)
     else:
-        raise ValueError("TemporalInterpolation only support sequence of single dim channels with optional batch")
+        raise ValueError(
+            f"Input tensor must have 2 or 3 dimensions, got {len(x.shape)} dimensions."
+        )
 
 # 构建用于读取验证集和测试集数据的Dataset类
 class eeg_dataset(Dataset):

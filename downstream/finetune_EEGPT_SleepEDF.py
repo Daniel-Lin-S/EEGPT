@@ -8,19 +8,21 @@ import torchvision
 from functools import partial
 import numpy as np
 import random
-import os 
-import tqdm
+import os
+from typing import Tuple
 from pytorch_lightning import loggers as pl_loggers
-import torch.nn.functional as F
+
+
 def seed_torch(seed=1029):
 	random.seed(seed)
-	os.environ['PYTHONHASHSEED'] = str(seed) # 为了禁止hash随机化，使得实验可复现
+	os.environ['PYTHONHASHSEED'] = str(seed) # for reproducibility
 	np.random.seed(seed)
 	torch.manual_seed(seed)
 	torch.cuda.manual_seed(seed)
 	torch.cuda.manual_seed_all(seed) # if you are using multi-GPU.
 	torch.backends.cudnn.benchmark = False
 	torch.backends.cudnn.deterministic = True
+
 seed_torch(7)
 
 from utils import temporal_interpolation
@@ -33,8 +35,44 @@ from Modules.Network.utils import Conv1dWithConstraint, LinearWithConstraint
 use_channels_names = ['F3', 'F4', 'C3', 'C4', 'P3','P4', 'FPZ', 'FZ', 'CZ', 'CPZ', 'PZ', 'POZ', 'OZ' ]
 
 class LitEEGPTCausal(pl.LightningModule):
+    """
+    A PyTorch Lightning module for fine-tuning the EEGPT model on the Sleep-EDF dataset.
 
-    def __init__(self, load_path="../checkpoint/eegpt_mcae_58chs_4s_large4E.ckpt"):
+    Attributes
+    ----------
+    chans_num : int
+        Number of EEG channels used in the model.
+    num_class : int
+        Number of output classes for classification.
+    target_encoder : EEGTransformer
+        The transformer encoder used for processing EEG data.
+    chans_id : torch.Tensor
+        Tensor containing channel IDs for the EEG data.
+    chan_conv : Conv1dWithConstraint
+        Convolutional layer for channel-wise processing.
+    linear_probe1 : LinearWithConstraint
+        Linear layer for initial feature projection.
+    drop : torch.nn.Dropout
+        Dropout layer for regularisation.
+    decoder : torch.nn.TransformerDecoder
+        Transformer decoder for sequence processing.
+    cls_token : torch.nn.Parameter
+        Class token for sequence classification.
+    linear_probe2 : LinearWithConstraint
+        Final linear layer for class logits.
+    loss_fn : torch.nn.CrossEntropyLoss
+        Loss function used for training.
+    """
+
+    def __init__(self, load_path: str="../checkpoint/eegpt_mcae_58chs_4s_large4E.ckpt"):
+        """
+        Parameters
+        ----------
+        load_path : str
+            Path to the pre-trained model checkpoint.
+            default is "../checkpoint/eegpt_mcae_58chs_4s_large4E.ckpt"
+            (save it in the current directory)
+        """
         super().__init__()    
         self.chans_num = len(use_channels_names)
         self.num_class = 5
@@ -53,7 +91,8 @@ class LitEEGPTCausal(pl.LightningModule):
             drop_path_rate=0.0,
             init_std=0.02,
             qkv_bias=True, 
-            norm_layer=partial(nn.LayerNorm, eps=1e-6))
+            norm_layer=partial(nn.LayerNorm, eps=1e-6)
+        )
             
         self.target_encoder = target_encoder
         self.chans_id       = target_encoder.prepare_chan_ids(use_channels_names)
@@ -65,8 +104,7 @@ class LitEEGPTCausal(pl.LightningModule):
         for k,v in pretrain_ckpt['state_dict'].items():
             if k.startswith("target_encoder."):
                 target_encoder_stat[k[15:]]=v
-        
-                
+
         self.target_encoder.load_state_dict(target_encoder_stat)
 
         self.chan_conv       = Conv1dWithConstraint(2, self.chans_num, 1, max_norm=1)
@@ -74,7 +112,9 @@ class LitEEGPTCausal(pl.LightningModule):
         self.linear_probe1   = LinearWithConstraint(2048, 64, max_norm=1)
         self.drop            = torch.nn.Dropout(p=0.50)        
         self.decoder         = torch.nn.TransformerDecoder(
-                                    decoder_layer=torch.nn.TransformerDecoderLayer(64, 4, 64*4, activation=torch.nn.functional.gelu, batch_first=False),
+                                    decoder_layer=torch.nn.TransformerDecoderLayer(
+                                        64, 4, 64*4, activation=torch.nn.functional.gelu,
+                                        batch_first=False),
                                     num_layers=4
                                 )
         self.cls_token =        torch.nn.Parameter(torch.rand(1,1,64)*0.001, requires_grad=True)
@@ -85,10 +125,24 @@ class LitEEGPTCausal(pl.LightningModule):
         self.running_scores = {"train":[], "valid":[], "test":[]}
         self.is_sanity = True
         
-    def forward(self, x):
-        B, C, T = x.shape
-        x = temporal_interpolation(x, 256*30)
-        x = self.chan_conv(x)
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input tensor of shape (B, C, T)
+            where B is batch size, C is number of channels, and T is time steps.
+        
+        Returns
+        -------
+        x : torch.Tensor
+            The input tensor after temporal interpolation and channel convolution.
+            with shape (B, C, 256*30).
+        h : torch.Tensor
+            The class logits with shape (B, n_classes).
+        """
+        x = temporal_interpolation(x, 256*30)  # (B, 2, 256*30)
+        x = self.chan_conv(x)    # (B, C, 256*30)
         self.target_encoder.eval()
         z = self.target_encoder(x, self.chans_id.to(x))
         

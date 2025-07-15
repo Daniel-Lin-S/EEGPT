@@ -16,12 +16,16 @@ import torch.nn as nn
 import math
 
 import torch
+from typing import List, Tuple, Optional
 
 from logging import getLogger
+
 
 logger = getLogger()
 
 
+# A global dictionary to map channel names to indices.
+# Used to align multiple EEG datasets with different channel names.
 CHANNEL_DICT = {k.upper():v for v,k in enumerate(
                      [      'FP1', 'FPZ', 'FP2', 
                         "AF7", 'AF3', 'AF4', "AF8", 
@@ -35,11 +39,14 @@ CHANNEL_DICT = {k.upper():v for v,k in enumerate(
 
 ################################# Utils ######################################
 
-def _no_grad_trunc_normal_(tensor, mean, std, a, b):
-    # Cut & paste from PyTorch official master until it's in a few official releases - RW
-    # Method based on https://people.sc.fsu.edu/~jburkardt/presentations/truncated_normal.pdf
+def _no_grad_trunc_normal_(
+        tensor: torch.Tensor, mean: float, std: float, a: float, b: float
+    ):
+    """
+    Cut & paste from PyTorch official master until it's in a few official releases - RW
+    Method based on https://people.sc.fsu.edu/~jburkardt/presentations/truncated_normal.pdf
+    """
     def norm_cdf(x):
-        # Computes standard normal cumulative distribution function
         return (1. + math.erf(x / math.sqrt(2.))) / 2.
 
     with torch.no_grad():
@@ -66,28 +73,72 @@ def _no_grad_trunc_normal_(tensor, mean, std, a, b):
         return tensor
 
 
-def trunc_normal_(tensor, mean=0., std=1., a=-2., b=2.):
-    # type: (Tensor, float, float, float, float) -> Tensor
+def trunc_normal_(
+        tensor: torch.Tensor,
+        mean: float=0., std: float=1.,
+        a: float=-2., b: float=2.
+    ) -> torch.Tensor:
+    """
+    Fills the input Tensor with values drawn from a truncated
+    normal distribution.
+
+    Parameters
+    ----------
+    tensor : torch.Tensor
+        The input tensor to be filled.
+    mean : float, optional
+        The mean of the normal distribution. Default is 0.
+    std : float, optional
+        The standard deviation of the normal distribution. Default is 1.
+    a : float, optional
+        The lower bound of the truncated distribution. Default is -2.
+    b : float, optional
+        The upper bound of the truncated distribution. Default is 2.
+
+    Returns
+    -------
+    torch.Tensor
+        The input tensor filled with values from the truncated normal distribution.
+    """
     return _no_grad_trunc_normal_(tensor, mean, std, a, b)
 
 
-def apply_mask(mask, x):
+def apply_mask(mask: torch.Tensor, x: torch.Tensor):
     """
-    :param x: tensor of shape [B (batch-size), N (num-patches), C, D (feature-dim)]
-    :param mask: tensor [mN, mC] containing indices of patches in [N, C] to keep 
+    Apply a mask to a tensor x, keeping only the patches specified by the mask.
+
+    Parameters
+    ----------
+    mask : torch.Tensor
+        A tensor of shape [mN, mC] containing indices of patches in [N, C] to keep.
+        mN - number of patches to keep
+        mC - number of channels to keep
+    x : torch.Tensor
+        A tensor of shape [B, N, C, D].
+        B - batch size
+        N - number of patches
+        C - number of channels
+        D - feature dimension (dimension of the embedding)
+
+    Returns
+    -------
+    masked_x : torch.Tensor
+        A tensor of shape [B, mN, mC, D] containing only
+        the patches specified by the mask.
     """    
     B, N, C, D = x.shape
     if len(mask.shape)==2:
         mN, mC = mask.shape
-        
+
         mask_keep = mask.reshape((1,mN*mC,1)).repeat((B, 1, D))
         masked_x = torch.gather(x.reshape((B, N*C, D)), dim=-2, index=mask_keep)
         masked_x = masked_x.contiguous().view((B,mN,mC,D))
     else:
         mN = mask.shape[0]
-        
+
         mask_keep = mask.reshape((1,mN,1)).repeat((B, 1, D))
         masked_x = torch.gather(x.reshape((B, N*C, D)), dim=-2, index=mask_keep)
+
     return masked_x
 
 def apply_mask_t(mask_t, x):
@@ -184,23 +235,65 @@ class RotaryEmbedding(nn.Module):
 ################################# EEGPT Model Begin ######################################
 
 class DropPath(nn.Module):
-    """Drop paths (Stochastic Depth) per sample  (when applied in main path of residual blocks).
+    """
+    Drop paths (Stochastic Depth) per sample (when applied in main path of residual blocks).
+    Each sample in the batch is either dropped (set to 0) or kept 
+    (but scaled to maintain energy)
     """
     def __init__(self, drop_prob=None):
+        """
+        Parameters
+        ----------
+        drop_prob : float, optional
+            Probability of dropping a path. Default is 0.
+        """
         super(DropPath, self).__init__()
         self.drop_prob = drop_prob
         
-    def drop_path(self, x, drop_prob: float = 0., training: bool = False):
+    def drop_path(
+            self, x: torch.Tensor,
+            drop_prob: float = 0., training: bool = False
+        ) -> torch.Tensor:
+        """
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input tensor of shape (B, ...)
+            where B is batch size and ... can be any number of dimensions.
+        drop_prob : float, optional
+            Probability of dropping a path. Default is 0.
+        training : bool, optional
+            Whether the model is in training mode. Default is False.
+            Paths are only dropped during training.
+        
+        Returns
+        -------
+        torch.Tensor
+            Output tensor of the same shape as input x,
+            with paths dropped according to drop_prob.
+        """
         if drop_prob == 0. or not training:
             return x
         keep_prob = 1 - drop_prob
-        shape = (x.shape[0],) + (1,) * (x.ndim - 1)  # work with diff dim tensors, not just 2D ConvNets
+        shape = (x.shape[0],) + (1,) * (x.ndim - 1)
         random_tensor = keep_prob + torch.rand(shape, dtype=x.dtype, device=x.device)
         random_tensor.floor_()  # binarize
         output = x.div(keep_prob) * random_tensor
         return output
     
     def forward(self, x):
+        """
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input tensor of shape (B, ...)
+            any number of dimensions after the batch dimension is allowed.
+        
+        Return
+        -------
+        torch.Tensor
+            Output tensor with shape (B, C, T) after applying DropPath.
+        """
         return self.drop_path(x, self.drop_prob, self.training)
 
 
@@ -266,6 +359,13 @@ class Attention(nn.Module):
 
 
 class Block(nn.Module):
+    """
+    Transformer Block with Multi-Head Self Attention and MLP.
+
+    Architecture: Multi-Head attention -> LayerNorm -> DropPath -> MLP -> LayerNorm -> DropPath \n 
+    where DropPath is a regularisation technique that
+    drops the entire sample (path) by chance. 
+    """
     def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, drop=0., attn_drop=0.,
                  drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, is_causal=False, use_rope=False, return_attention=False):
         super().__init__()
@@ -287,9 +387,33 @@ class Block(nn.Module):
         return x
 
 class PatchEmbed(nn.Module):
-    """ Image to Patch Embedding
     """
-    def __init__(self, img_size=(64, 1000), patch_size=16, patch_stride=None, embed_dim=768):
+    Image to Patch Embedding
+    This module converts an input image into a sequence of patches (along the width dimension).
+    Each patch is flattened and projected into an embedding space.
+    """
+    def __init__(
+            self, img_size: Tuple[int]=(64, 1000),
+            patch_size: int=16,
+            patch_stride: Optional[int]=None,
+            embed_dim: int=768
+        ):
+        """
+        Parameters
+        ----------
+        img_size : tuple, optional
+            Size of the input image (height, width). \n
+            Default is (64, 1000).
+        patch_size : int, optional
+            Size of each patch. \n
+            Default is 16.
+        patch_stride : int, optional
+            Stride for patch extraction.
+            If not given, it defaults to patch_size.
+        embed_dim : int, optional
+            Dimension of the embedding space. \n
+            Default is 768.
+        """
         super().__init__()
         self.img_size = img_size
         self.patch_size = patch_size
@@ -299,14 +423,35 @@ class PatchEmbed(nn.Module):
         else:
             self.num_patches = ((img_size[0]), ((img_size[1] - patch_size) // patch_stride + 1))
 
-        self.proj = nn.Conv2d(1, embed_dim, kernel_size=(1,patch_size), 
-                              stride=(1, patch_size if patch_stride is None else patch_stride))
-        
+        # temporal convolution to extract patches
+        self.proj = nn.Conv2d(
+            1, embed_dim, kernel_size=(1,patch_size),
+            stride=(1, patch_size if patch_stride is None else patch_stride))
+
     def forward(self, x):
-        # x: B,C,T
-        x = x.unsqueeze(1)# B, 1, C, T
-        x = self.proj(x).transpose(1,3) # B, T, C, D
+        """
+        Forward pass of the PatchEmbed module.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input tensor of shape (B, C, T)
+            where B is batch size,
+            C is number of channels,
+            and T is sequence length.
+        
+        Returns
+        -------
+        torch.Tensor
+            Output tensor of shape (B, num_patches, C, embed_dim)
+            where num_patches is the number of patches extracted from the input image,
+            which depends on the image size, patch size and patch stride.
+        """
+        x = x.unsqueeze(1)
+        x = self.proj(x).transpose(1, 3)
         return x
+
+
 class PatchNormEmbed(nn.Module):
     """ Image to Patch Embedding
     """
@@ -349,6 +494,8 @@ class PatchNormEmbed(nn.Module):
         x = self.proj(x) # B, T, C, D
         
         return x
+
+
 class EEGTransformerReconstructor(nn.Module):
     """ EEG Transformer """
     def __init__(
@@ -401,7 +548,7 @@ class EEGTransformerReconstructor(nn.Module):
             for i in range(depth)])
         self.reconstructor_norm = norm_layer(reconstructor_embed_dim)
         self.reconstructor_proj = nn.Linear(reconstructor_embed_dim, patch_size, bias=True)
-        # ------
+        # Initialise mask token and model weights.
         self.init_std = init_std
         trunc_normal_(self.mask_token, std=self.init_std)
         self.apply(self._init_weights)
@@ -501,7 +648,8 @@ class EEGTransformerReconstructor(nn.Module):
             x = self.reconstructor_proj(x)
             
             return x
-        
+
+
 class EEGTransformerPredictor(nn.Module):
     """ EEG Transformer """
     def __init__(
@@ -643,73 +791,166 @@ class EEGTransformerPredictor(nn.Module):
             return x, cmb_x
         return x
 
+
 class EEGTransformer(nn.Module):
-    """ EEG Transformer """
+    """
+    EEG Transformer Model for EEG data processing.
+
+    Loading pre-trained weights:
+    >>> model = EEGTransformer()
+    >>> model.load_state_dict(torch.load('path_to_weights.pth'))
+    >>> model.eval()  # Set to evaluation mode
+    The parameters that must be kept the same to the pre-trained version:
+    all hyper-parameters related to transformer blocks
+    (depth, num_heads, embed_dim, mlp_ratio, qkv_bias,
+    drop_rate, attn_drop_rate, drop_path_rate, norm_layer),
+    """
     def __init__(
         self,
-        img_size=(64,1000),
-        patch_size=64,
-        patch_stride=None,
-        embed_dim=768,
-        embed_num=1,
-        predictor_embed_dim=384,
-        depth=12,
-        predictor_depth=12,
-        num_heads=12,
-        mlp_ratio=4.0,
-        qkv_bias=True,
-        drop_rate=0.0,
-        attn_drop_rate=0.0,
-        drop_path_rate=0.0,
-        norm_layer=nn.LayerNorm,
-        patch_module=PatchEmbed,# PatchNormEmbed
-        init_std=0.02,
-        interpolate_factor = 2.,
-        return_attention_layer=-1,
+        img_size: Tuple[int]=(64,1000),
+        patch_size: int=64,
+        patch_stride: Optional[int]=None,
+        embed_dim: int=768,
+        embed_num: int=1,
+        depth: int=12,
+        num_heads: int=12,
+        mlp_ratio: float=4.0,
+        qkv_bias: bool=True,
+        drop_rate: float=0.0,
+        attn_drop_rate: float=0.0,
+        drop_path_rate: float=0.0,
+        norm_layer: nn.Module=nn.LayerNorm,
+        patch_module: nn.Module=PatchEmbed,
+        init_std: float=0.02,
+        return_attention_layer: int=-1,
         **kwargs
     ):
+        """
+        Initialises the EEG Transformer model.
+
+        Parameters
+        ----------
+        img_size : tuple, optional
+            Size of the input image (height, width). Default is (64, 1000).
+        patch_size : int, optional
+            Size (number of time points) of each patch. Default is 64.
+        patch_stride : int, optional
+            Stride for patch extraction. If not given, it defaults to patch_size.
+        embed_dim : int, optional
+            Dimension of the embedding space. Default is 768.
+            Each patch is converted into an embedding of this dimension.
+        embed_num : int, optional
+            Number of embedding tokens. Default is 1.
+        depth : int, optional
+            Number of transformer blocks in the model. Default is 12.
+        num_heads : int, optional
+            Number of attention heads in each transformer block. Default is 12.
+        mlp_ratio : float, optional
+            Ratio of the hidden dimension in the MLP
+            to the embedding dimension. Default is 4.0. \n
+            e.g. default embed_dim is 768,
+            then hidden dimension is 768 * 4 = 3072.
+        qkv_bias : bool, optional
+            Whether to use bias (constant) term in the linear
+            layers producing Q, K, V tensors in the attention mechanism. \n
+            Default is True.
+        drop_rate : float, optional
+            Dropout rate applied to the output of the attention layer. \n
+            Default is 0.0.
+        drop_path_rate : float, optional
+            Drop path rate for stochastic depth regularisation. \n
+            Default is 0.0.
+        attn_drop_rate : float, optional
+            Dropout rate applied to the attention weights. \n
+            Default is 0.0.
+        norm_layer : nn.Module, optional
+            Normalisation layer to be applied after each transformer block. \n
+            Default is nn.LayerNorm.
+        patch_module : nn.Module, optional
+            Module for patch embedding. \n
+            Default is PatchEmbed, which extracts patches from the input image.
+            One could also use PatchNormEmbed for normalised patch embedding.
+        init_std : float, optional
+            Standard deviation of the (truncated) normal distribution
+            used for initialising model weights. \n
+            Default is 0.02.
+        return_attention_layer : int, optional
+            Layer index at which to return attention weights. \n
+            If -1, no attention weights are returned. Default is -1.
+        """
         super().__init__()
+        self.img_size = img_size
         self.num_features = self.embed_dim = embed_dim
         self.embed_num = embed_num
         
         self.num_heads = num_heads
-        
-        # --
+
         self.patch_embed = patch_module(
             img_size=img_size,
             patch_size=patch_size,
             patch_stride=patch_stride,
-            embed_dim=embed_dim)
-        self.num_patches = self.patch_embed.num_patches
-        # --
-        
+            embed_dim=embed_dim
+        )
+
+        # a dictionary-like object to map channel ids to embedded vectors
         self.chan_embed = nn.Embedding(len(CHANNEL_DICT), embed_dim)
-        # --
-        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule
+
+        # stochastic depth decay rule
+        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]
+
         self.blocks = nn.ModuleList([
             Block(
                 dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias,
                 drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer, 
                 is_causal=False, use_rope= False, return_attention=(i+1)==return_attention_layer)
             for i in range(depth)])
+
         self.norm = norm_layer(embed_dim)
-        # ------
+
         self.init_std = init_std
+
+        # empty summary tokens (like [cls] in BERT) to store the output tokens.
         self.summary_token = nn.Parameter(torch.zeros(1, embed_num, embed_dim))
-            
+
+        # Initialise summary token and model weights.
         trunc_normal_(self.summary_token, std=self.init_std)
         self.apply(self._init_weights)
         self.fix_init_weight()
+
+    def prepare_chan_ids(
+            self, channels: List[str]
+        ) -> torch.Tensor:
+        """
+        Convert channel names to channel ids.
+
+        Parameter
+        ----------
+        channels : list of str
+            List of channel names (e.g., ['C3', 'C4', 'O1', ...]).
         
-    def prepare_chan_ids(self, channels):
+        Returns
+        -------
+        torch.Tensor
+            Tensor of shape (1, num_channels) containing channel ids.
+        
+        Raises
+        ------
+        AssertionError
+            If any channel name is not in the predefined CHANNEL_DICT.
+        """
         chan_ids = []
         for ch in channels:
             ch = ch.upper().strip('.')
             assert ch in CHANNEL_DICT
             chan_ids.append(CHANNEL_DICT[ch])
+
         return torch.tensor(chan_ids).unsqueeze_(0).long()
     
-    def fix_init_weight(self):
+    def fix_init_weight(self) -> None:
+        """
+        Rescale the weights of attention projection and MLP layers
+        in each transformer block to maintain stability during training.
+        """
         def rescale(param, layer_id):
             param.div_(math.sqrt(2.0 * layer_id))
 
@@ -717,7 +958,20 @@ class EEGTransformer(nn.Module):
             rescale(layer.attn.proj.weight.data, layer_id + 1)
             rescale(layer.mlp.fc2.weight.data, layer_id + 1)
 
-    def _init_weights(self, m):
+    def _init_weights(self, m: nn.Module):
+        """
+        Initialise weights of the model.
+        Linear layers are initialised with truncated normal distribution,
+        layer norms are initialised with constant values,
+        convolutional layers are initialised with truncated normal distribution
+        with optional bias initialised to zero.
+        Embedding layers are initialised with normal distribution.
+
+        Parameters
+        ----------
+        m : nn.Module
+            Module to initialise weights for.
+        """
         if isinstance(m, nn.Linear):
             trunc_normal_(m.weight, std=self.init_std)
             if isinstance(m, nn.Linear) and m.bias is not None:
@@ -732,59 +986,97 @@ class EEGTransformer(nn.Module):
         elif isinstance(m, nn.Embedding):
             torch.nn.init.normal_(m.weight, mean=0.0, std=0.02)
 
-    def forward(self, x, chan_ids=None, mask_x=None, mask_t=None):
-        # x.shape B, C, T
-        # mask_x.shape mN, mC
-        # mask_t.shape mN
-        
-        # -- patchify x
-        x = self.patch_embed(x) #
-        B, N, C, D = x.shape
-        
-        assert N==self.num_patches[1] and C==self.num_patches[0], f"{N}=={self.num_patches[1]} and {C}=={self.num_patches[0]}"
+    def forward(
+            self, x: torch.Tensor,
+            chan_ids: Optional[torch.Tensor]=None,
+            mask_x: Optional[torch.Tensor]=None,
+            mask_t: Optional[torch.Tensor]=None
+        ) -> torch.Tensor:
+        """
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input tensor of shape (B, C, T)
+            where B is batch size,
+            C is number of channels,
+            and T is time steps.
+            C and T must match the img_size when initialising this class.
+        chan_ids : torch.Tensor, optional
+            Tensor of shape (1, C) containing selected channel ids.
+            If given, C should be equal to img_size[0].
+            If None, uses all channels, in which case the number of
+            channels of the input must match img_size[0].
+        mask_x : torch.Tensor, optional
+            Tensor of shape (mN, mC) containing indices of patches
+            of the patch embeddings to be masked out before transformer blocks.
+            mN - number of patches to be masked out, mN <= N.
+            mC - number of channels to be masked out, mC <= C.
+            If None, no masking is applied.
+        mask_t : torch.Tensor, optional
+            Tensor of shape (mmN,) containing indices of patches
+            of the output tokens to be masked out. Note that mmN <= N.
+            If None, no masking is applied.
+
+        Returns
+        -------
+        torch.Tensor
+            Output tensor of shape (B, N, embed_num, D)
+            where B is batch size,
+            N is number of patches
+            (not be the same as input if mask_x or mask_t are provided),
+            embed_num is number of embedding tokens,
+            and D is embedding dimension.
+        """
+        B, C, T = x.shape
+
+        if C != self.img_size[0] or T != self.img_size[1]:
+            raise ValueError(
+                f"Input shape {x.shape} does not match img_size {self.img_size}."
+            )
+
+        x = self.patch_embed(x)  # (B, num_patches, C, D)
         
         if chan_ids is None:
             chan_ids = torch.arange(0,C)     
         chan_ids = chan_ids.to(x)
-        
-        # -- add channels positional embedding to x
+
+        # add positional embedding of channels
         x = x + self.chan_embed(chan_ids.long()).unsqueeze(0) # (1,C) -> (1,1,C,D)
         
         if mask_x is not None:
             mask_x = mask_x.to(x.device)
-            x = apply_mask(mask_x, x)# B, mN, mC, D
-            B, N, C, D = x.shape
+            x = apply_mask(mask_x, x)    # (B, mN, mC, D)
             
-        
-        x = x.flatten(0, 1) # BmN, mC, D
-        
-        # -- concat summary token
+        B, N, C, _ = x.shape
+
+        x = x.flatten(0, 1)   # (B * mN, mC, D)
+
+        # concat summary token
         summary_token = self.summary_token.repeat((x.shape[0], 1, 1))
-        x = torch.cat([x,summary_token], dim=1)  # BmN, mC+embed_num, D
+        x = torch.cat([x, summary_token], dim=1)  # (B * mN, mC + embed_num, D)
         
-        # -- fwd prop
-        for i, blk in enumerate(self.blocks):
-            x = blk(x) # B*N, mC+1, D
+        # apply attention blocks
+        for blk in self.blocks:
+            x = blk(x)
             if blk.return_attention==True: return x
 
-        x = x[:, -summary_token.shape[1]:, :]
+        # prepare output
+        x = x[:, -summary_token.shape[1]:, :]   # (B * mN, embed_num, D)
         
         if self.norm is not None:
-            x = self.norm(x) 
-
+            x = self.norm(x)
         
         x = x.flatten(-2)
-        x = x.reshape((B, N, -1))
-        # -- reshape back
-            
+        x = x.reshape((B, N, -1))   # (B, mN, embed_num * D)
+
         if mask_t is not None:
             mask_t = mask_t.to(x.device)
-            x = apply_mask_t(mask_t, x)# B, mN, D        
+            x = apply_mask_t(mask_t, x)   # (B, mmN, embed_num * D)
         
         x = x.reshape((B, N, self.embed_num, -1))
         
         return x
-    
+
 
 
 if __name__=="__main__":
@@ -873,4 +1165,4 @@ if __name__=="__main__":
         norm_layer=partial(nn.LayerNorm, eps=1e-6))
     
     b = model3(a, mask_y=torch.tensor([6,7,8,9]))
-    print(b) 
+    print(b)

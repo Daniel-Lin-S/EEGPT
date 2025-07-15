@@ -3,24 +3,17 @@ import os
 import torch
 from torch import nn
 import pytorch_lightning as pl
+from pytorch_lightning import loggers as pl_loggers
 
 from functools import partial
-import numpy as np
 import random
 import os 
-import tqdm
-from pytorch_lightning import loggers as pl_loggers
 import torch.nn.functional as F
-def seed_torch(seed=1029):
-	random.seed(seed)
-	os.environ['PYTHONHASHSEED'] = str(seed) # 为了禁止hash随机化，使得实验可复现
-	np.random.seed(seed)
-	torch.manual_seed(seed)
-	torch.cuda.manual_seed(seed)
-	torch.cuda.manual_seed_all(seed) # if you are using multi-GPU.
-	torch.backends.cudnn.benchmark = False
-	torch.backends.cudnn.deterministic = True
-seed_torch(7)
+from typing import List
+
+from utils import set_seed
+
+set_seed(7)
 
 from Modules.models.EEGPT_mcae import EEGTransformer
 
@@ -34,29 +27,88 @@ use_channels_names = [
         'P7', 'P3', 'PZ', 'P4', 'P8',
                 'O1', 'O2' ]
 
-class LitEEGPTCausal(pl.LightningModule):
+EEGPT_pretrain_settings = {
+    'depth' : 8,
+    'embed_dim': 512,
+    'num_heads': 8,
+    'mlp_ratio': 4.0,
+    'drop_rate': 0.0,
+    'attn_drop_rate': 0.0,
+    'drop_path_rate': 0.0,
+    'init_std': 0.02,
+    'qkv_bias': True,
+    'norm_layer' : partial(nn.LayerNorm, eps=1e-6)
+}
 
-    def __init__(self, load_path="../checkpoint/eegpt_mcae_58chs_4s_large4E.ckpt"):
+class LitEEGPTCausal(pl.LightningModule):
+    """
+    Assess the performance of EEGPT on BCIC2A dataset
+    by linear probing. (the weights of EEGPT encoder are frozen)
+
+    There are 22 channels in the dataset, the model only uses
+    the channels specified in `use_channels_names`. (19 channels)
+
+    Linear head size:
+    - First linear probe: (embed_num * embed_dim) -> num_patches
+    (32,768 parameters in this case)
+    - Second linear probe: num_patches * num_patches -> num_classes
+    (1,024 parameters in this case)
+
+    Attributes
+    ----------
+    chans_num : int
+        Number of channels used in the model.
+    target_encoder : EEGTransformer
+        The transformer encoder model for EEG data.
+    chans_id : torch.Tensor
+        Tensor containing the channel IDs for the transformer encoder.
+    chan_conv : Conv1dWithConstraint
+        Convolutional layer to match the number of channels
+        of the input data to the number of channels used in the model.
+    linear_probe1 : LinearWithConstraint
+        First linear probe layer applied to reduce feature dimension
+        (embed_num * embed_dim) of each patch.
+    linear_probe2 : LinearWithConstraint
+        Second linear probe layer to map the output to the number of classes.
+    drop : torch.nn.Dropout
+        Dropout layer to prevent overfitting.
+        Applied before the linear prediction heads.
+    loss_fn : torch.nn.CrossEntropyLoss
+        Loss function used for training.
+    running_scores : dict
+        Dictionary to store running scores for different phases
+        (train, valid, test).
+    is_sanity : bool
+        Flag to indicate if the model is in the sanity check phase.
+        Used to skip validation during the initial sanity check.
+    """
+
+    def __init__(
+            self, load_path: str="../checkpoint/eegpt_mcae_58chs_4s_large4E.ckpt",
+            input_length: int=1024,
+            input_channels: int=22,
+            channels_to_use: List[str]=use_channels_names,
+            num_classes: int=4,
+            embed_num: int=4,
+            embed_dim: int=512,
+            patch_size: int=64,
+            EEGPT_pretrain_settings: dict=EEGPT_pretrain_settings
+        ):
         super().__init__()    
-        self.chans_num = 19
+        self.chans_num = len(channels_to_use)
         # init model
+        num_patches = (input_length - patch_size) // patch_size + 1
+
         target_encoder = EEGTransformer(
-            img_size=[19, 1024],
-            patch_size=32*2,
-            embed_num=4,
-            embed_dim=512,
-            depth=8,
-            num_heads=8,
-            mlp_ratio=4.0,
-            drop_rate=0.0,
-            attn_drop_rate=0.0,
-            drop_path_rate=0.0,
-            init_std=0.02,
-            qkv_bias=True, 
-            norm_layer=partial(nn.LayerNorm, eps=1e-6))
+            img_size=[self.chans_num, input_length],
+            patch_size=patch_size,
+            embed_num=embed_num,
+            embed_dim=embed_dim,
+            **EEGPT_pretrain_settings
+        )
             
         self.target_encoder = target_encoder
-        self.chans_id       = target_encoder.prepare_chan_ids(use_channels_names)
+        self.chans_id       = target_encoder.prepare_chan_ids(channels_to_use)
         
         # -- load checkpoint
         pretrain_ckpt = torch.load(load_path)
@@ -67,31 +119,53 @@ class LitEEGPTCausal(pl.LightningModule):
                 target_encoder_stat[k[15:]]=v
                 
         self.target_encoder.load_state_dict(target_encoder_stat)
-        self.chan_conv       = Conv1dWithConstraint(22, self.chans_num, 1, max_norm=1)
-        self.linear_probe1   =   LinearWithConstraint(2048, 16, max_norm=1)
-        self.linear_probe2   =   LinearWithConstraint(16*16, 4, max_norm=0.25)
+        self.chan_conv       = Conv1dWithConstraint(
+            input_channels, self.chans_num, 1, max_norm=1)
+        self.linear_probe1   =   LinearWithConstraint(
+            embed_num*embed_dim, num_patches, max_norm=1)
+        self.linear_probe2   =   LinearWithConstraint(
+            num_patches*num_patches, num_classes, max_norm=0.25)
         
         self.drop           = torch.nn.Dropout(p=0.50)
         
         self.loss_fn        = torch.nn.CrossEntropyLoss()
         self.running_scores = {"train":[], "valid":[], "test":[]}
         self.is_sanity=True
-        
+
     def forward(self, x):
+        """
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input data of shape (B, C, T).
+            B - batch size
+            C - number of channels,
+            T - number of time steps.
         
-        x = self.chan_conv(x)
+        Returns
+        -------
+        x : torch.Tensor
+            The input data after channel-wise convolution.
+            Shape: (B, chans_num, T),
+            where chans_num is the number of channels used in the model.
+        h : torch.Tensor
+            The output logits after the linear probes.
+            Shape: (B, num_classes).
+        """
         
-        self.target_encoder.eval()
+        x = self.chan_conv(x)  # (B, C, T)
+
+        self.target_encoder.eval()  # frozen weights
+
+        z = self.target_encoder(x, self.chans_id.to(x))  # (C, num_patches, embed_num, embed_dim)
         
-        z = self.target_encoder(x, self.chans_id.to(x))
+        h = z.flatten(2)   # (B, num_patches, embed_num * embed_dim)
         
-        h = z.flatten(2)
+        h = self.linear_probe1(self.drop(h))    # (B, num_patches, num_patches)
         
-        h = self.linear_probe1(self.drop(h))
+        h = h.flatten(1)     # (B, num_patches*num_patches)
         
-        h = h.flatten(1)
-        
-        h = self.linear_probe2(h)
+        h = self.linear_probe2(h)  # (B, num_classes)
         
         return x, h
 
@@ -187,7 +261,7 @@ from utils import *
 data_path = "../datasets/downstream/Data/BCIC_2a_0_38HZ"
 import math
 # used seed: 7
-seed_torch(8)
+set_seed(8)
 for i in range(1,10):
     all_subjects = [i]
     all_datas = []
