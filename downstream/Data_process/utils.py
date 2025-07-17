@@ -1,9 +1,11 @@
 import numpy as np
-import scipy
+from scipy.linalg import fractional_matrix_power
 import os
 import scipy.io as sio
+from typing import Optional
 
-def train_validation_split(x,y,validation_size,seed = None):
+
+def train_validation_split(x, y, validation_size, seed = None):
     '''
     Split the training set into a new training set and a validation set
     @author: WenChao Liu
@@ -39,32 +41,42 @@ def train_validation_split(x,y,validation_size,seed = None):
     print(validation_x.shape,validation_y.shape)
     return train_x,train_y,validation_x,validation_y
 
-# 欧氏空间的对齐方式 其中x：NxCxS
-def EA(x,new_R = None):
-    # print(x.shape)
-    '''
-    The Eulidean space alignment approach for EEG data.
 
-    Arg:
-        x:The input data,shape of NxCxS
-        new_R：The reference matrix.
-    Return:
-        The aligned data.
-    '''
+def EA(x: np.ndarray, new_R: Optional[np.ndarray] = None) -> np.ndarray:
+    """
+    Perform the Euclidean Alignment (EA) on the input data.
+    It reduces the covariance of the data to the identity matrix
+    so that inter-subject and inter-session variability is minimised.
+
+    Parameters
+    ----------
+    x : numpy.ndarray
+        Input data of shape (n_samples, n_channels, n_samples).
+    new_R : numpy.ndarray, optional
+        New covariance matrix to apply after alignment to identity matrix.
+        If None, only the alignment is performed.
+
+    Returns
+    -------
+    numpy.ndarray
+        Transformed data with reduced covariance.
+        has the same shape as input x.
+    """
     
-    xt = np.transpose(x,axes=(0,2,1))
-    # print('xt shape:',xt.shape)
-    E = np.matmul(x,xt)
-    # print(E.shape)
-    R = np.mean(E, axis=0)
-    # print('R shape:',R.shape)
+    xt = np.transpose(x, axes=(0,2,1))
+    E = np.matmul(x, xt)   # covariance matrix
+    R = np.mean(E, axis=0)  # average covariance matrix across samples
 
-    R_mat = scipy.linalg.fractional_matrix_power(R,-0.5)
-    new_x = np.einsum('n c s,r c -> n r s',x,R_mat)
+    # apply whitening transformation
+    R_mat = fractional_matrix_power(R, -0.5)
+    new_x = np.einsum('n c s,r c -> n r s', x, R_mat)
+
     if new_R is None:
         return new_x
 
-    new_x = np.einsum('n c s,r c -> n r s',new_x,scipy.linalg.fractional_matrix_power(new_R,0.5))
+    new_x = np.einsum(
+        'n c s,r c -> n r s', new_x,
+        fractional_matrix_power(new_R, 0.5))
     
     return new_x
 

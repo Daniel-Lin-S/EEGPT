@@ -201,6 +201,7 @@ class LitEEGPTCausal(pl.LightningModule):
             self.log('valid_'+key, value, on_epoch=True, on_step=False, sync_dist=True)
         
         return super().on_validation_epoch_end()
+
     def validation_step(self, batch, batch_idx):
         # training_step defined the train loop.
         # It is independent of forward
@@ -253,8 +254,12 @@ for fold in range(10):
     set_valid = set(subjects[fold*N:(fold+1)*N])
     set_train = set_all - set_valid
 
-    train_dataset = torchvision.datasets.DatasetFolder(root="../datasets/downstream/sleep_edf/TrainFold", loader=lambda x: torch.load(x),  extensions=[f'.s{i}' for i in set_train])
-    valid_dataset = torchvision.datasets.DatasetFolder(root="../datasets/downstream/sleep_edf/TrainFold", loader=lambda x: torch.load(x), extensions=[f'.s{i}' for i in set_valid])
+    train_dataset = torchvision.datasets.DatasetFolder(
+        root="../datasets/downstream/sleep_edf/TrainFold",
+        loader=lambda x: torch.load(x),  extensions=[f'.s{i}' for i in set_train])
+    valid_dataset = torchvision.datasets.DatasetFolder(
+        root="../datasets/downstream/sleep_edf/TrainFold",
+        loader=lambda x: torch.load(x), extensions=[f'.s{i}' for i in set_valid])
 
     # -- begin Training ------------------------------
 
@@ -267,8 +272,10 @@ for fold in range(10):
 
     batch_size=8*4
 
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, num_workers=8, shuffle=True)
-    valid_loader = torch.utils.data.DataLoader(valid_dataset, batch_size=batch_size, num_workers=8, shuffle=False)
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset, batch_size=batch_size, num_workers=8, shuffle=True)
+    valid_loader = torch.utils.data.DataLoader(
+        valid_dataset, batch_size=batch_size, num_workers=8, shuffle=False)
 
     max_epochs = 40
     steps_per_epoch = math.ceil(len(train_loader))
@@ -282,7 +289,7 @@ for fold in range(10):
     callbacks = [lr_monitor]
 
     trainer = pl.Trainer(accelerator='cuda',
-                        precision=16,
+                        precision='16-mixed',
                         max_epochs=max_epochs, 
                         callbacks=callbacks,
                         logger=[pl_loggers.TensorBoardLogger('./logs/', name="EEGPT_SLEEPEDF_tb", version=f"fold{fold+1}"), 

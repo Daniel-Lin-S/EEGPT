@@ -1,2 +1,7 @@
 checkpoints
 figures
+Raw_data
+Data
+logs
+downstream/*.sh
+__pycache__

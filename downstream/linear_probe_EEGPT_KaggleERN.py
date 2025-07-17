@@ -1,7 +1,15 @@
+"""
+High-pass: 0.5 Hz
+Low-pass: 100.0 Hz
+Number of channels: 25 (EEG)
+Sample frequency: 250.0 Hz
+"""
+
+
 import random 
 import os
-from typing import Any, Optional
 from pytorch_lightning.utilities.types import STEP_OUTPUT
+from pytorch_lightning import loggers as pl_loggers
 import torch
 from torch import nn
 import pytorch_lightning as pl
@@ -9,10 +17,13 @@ import pytorch_lightning as pl
 from functools import partial
 import numpy as np
 import random
-import os 
-import tqdm
-from pytorch_lightning import loggers as pl_loggers
-import torch.nn.functional as F
+from typing import Any
+import math
+
+
+from utils import set_seed, read_kaggle_ern_train, read_kaggle_ern_test
+
+
 def seed_torch(seed=1029):
 	random.seed(seed)
 	os.environ['PYTHONHASHSEED'] = str(seed) # 为了禁止hash随机化，使得实验可复现
@@ -244,12 +255,10 @@ class LitEEGPTCausal(pl.LightningModule):
         return (
             {'optimizer': optimizer, 'lr_scheduler': lr_dict},
         )
-        
-# load configs
-# -- LOSO 
-from utils import *
-import math
-seed_torch(9)
+
+
+set_seed(9)
+
 path = "../datasets/downstream"
 
 global max_epochs
@@ -260,21 +269,23 @@ batch_size=64
 max_epochs = 100
 
 Folds = {
-        1:([12,13,14,16,17,18,20,21,22,23,24,26],[1,3,4,5,8,9,10,15,19,25]),
-        2:([2,6,7,11,17,18,20,21,22,23,24,26],[1,3,4,5,8,9,10,15,19,25]),
-        3:([2,6,7,11,12,13,14,16,22,23,24,26],[1,3,4,5,8,9,10,15,19,25]),
-        4:([2,6,7,11,12,13,14,16,17,18,20,21],[1,3,4,5,8,9,10,15,19,25]),
-    } 
+        1: ([12,13,14,16,17,18,20,21,22,23,24,26],[1,3,4,5,8,9,10,15,19,25]),
+        2: ([2,6,7,11,17,18,20,21,22,23,24,26],[1,3,4,5,8,9,10,15,19,25]),
+        3: ([2,6,7,11,12,13,14,16,22,23,24,26],[1,3,4,5,8,9,10,15,19,25]),
+        4: ([2,6,7,11,12,13,14,16,17,18,20,21],[1,3,4,5,8,9,10,15,19,25]),
+    }
 
-for k,v in Folds.items():
+for k, v in Folds.items():
     # init model
     model = LitEEGPTCausal()
     lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval='epoch')
     callbacks = [lr_monitor]
-    training   = read_kaggle_ern_train(path,subjects=v[0])
-    validation = read_kaggle_ern_test(path,subjects=v[1])
-    train_loader = torch.utils.data.DataLoader(training, batch_size=batch_size, num_workers=0, shuffle=True)
-    valid_loader = torch.utils.data.DataLoader(validation, batch_size=batch_size, num_workers=0, shuffle=False)
+    training   = read_kaggle_ern_train(path, subjects=v[0])
+    validation = read_kaggle_ern_test(path, subjects=v[1])
+    train_loader = torch.utils.data.DataLoader(
+        training, batch_size=batch_size, num_workers=0, shuffle=True)
+    valid_loader = torch.utils.data.DataLoader(
+        validation, batch_size=batch_size, num_workers=0, shuffle=False)
 
     steps_per_epoch = math.ceil(len(train_loader) )
     max_lr = 4e-4
@@ -282,8 +293,10 @@ for k,v in Folds.items():
                 max_epochs=max_epochs, 
                 callbacks=callbacks,
                 enable_checkpointing=False,
-                logger=[pl_loggers.TensorBoardLogger('./logs/', name="EEGPT_ERN_tb", version=f"fold{k}"), 
-                        pl_loggers.CSVLogger('./logs/', name="EEGPT_ERN_csv")])
+                logger=[
+                    pl_loggers.TensorBoardLogger('./logs/', name="EEGPT_ERN_tb", version=f"fold{k}"),
+                    pl_loggers.CSVLogger('./logs/', name="EEGPT_ERN_csv")]
+                )
 
     trainer.fit(model, train_loader, valid_loader, ckpt_path='last')
 

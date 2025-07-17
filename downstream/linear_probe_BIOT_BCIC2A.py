@@ -164,7 +164,7 @@ seed_torch(9)
 for i in range(1,10):
     all_subjects = [i]
     all_datas = []
-    train_dataset,valid_dataset,test_dataset = get_data(i,data_path,1,True, target_sample=200*4)
+    train_dataset,valid_dataset,test_dataset = get_data_BCIC(i,data_path,1,True, target_sample=200*4)
     
     global max_epochs
     global steps_per_epoch

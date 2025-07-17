@@ -192,11 +192,15 @@ for fold in range(10):
     lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval='epoch')
     callbacks = [lr_monitor]
 
-    trainer = pl.Trainer(accelerator='cuda',
-                        precision=16,
-                        max_epochs=max_epochs, 
-                        callbacks=callbacks,
-                        logger=[pl_loggers.TensorBoardLogger('./logs/', name="LaBraM_SLEEPEDF_tb", version=f"fold{fold+1}"), 
-                                pl_loggers.CSVLogger('./logs/', name="LaBraM_SLEEPEDF_csv")])
+    trainer = pl.Trainer(
+        accelerator='cuda',
+        precision=16,
+        max_epochs=max_epochs, 
+        callbacks=callbacks,
+        logger=[
+            pl_loggers.TensorBoardLogger('./logs/', name="LaBraM_SLEEPEDF_tb", version=f"fold{fold+1}"),
+            pl_loggers.CSVLogger('./logs/', name="LaBraM_SLEEPEDF_csv")
+        ]
+    )
 
     trainer.fit(model, train_loader, valid_loader, ckpt_path='last')

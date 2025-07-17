@@ -156,8 +156,12 @@ for fold in range(10):
     set_valid = set(subjects[fold*N:(fold+1)*N])
     set_train = set_all - set_valid
     
-    train_dataset = torchvision.datasets.DatasetFolder(root="../datasets/downstream/sleep_edf/TrainFold", loader=lambda x: torch.load(x),  extensions=[f'.s{i}' for i in set_train])
-    valid_dataset = torchvision.datasets.DatasetFolder(root="../datasets/downstream/sleep_edf/TrainFold", loader=lambda x: torch.load(x), extensions=[f'.s{i}' for i in set_valid])
+    train_dataset = torchvision.datasets.DatasetFolder(
+        root="../datasets/downstream/sleep_edf/TrainFold",
+        loader=lambda x: torch.load(x),  extensions=[f'.s{i}' for i in set_train])
+    valid_dataset = torchvision.datasets.DatasetFolder(
+        root="../datasets/downstream/sleep_edf/TrainFold",
+        loader=lambda x: torch.load(x), extensions=[f'.s{i}' for i in set_valid])
 
     # -- begin Training ------------------------------
 
@@ -185,7 +189,7 @@ for fold in range(10):
     callbacks = [lr_monitor]
 
     trainer = pl.Trainer(accelerator='cuda',
-                        precision=16,
+                        precision='16-mixed',
                         max_epochs=max_epochs, 
                         callbacks=callbacks,
                         logger=[pl_loggers.TensorBoardLogger('./logs/', name="BENDR_SLEEPEDF_tb", version=f"fold{fold+1}"), 

@@ -12,14 +12,14 @@ cur_path = os.path.abspath(os.path.dirname(__file__))
 root_path = os.path.split(cur_path)[0]
 sys.path.append(root_path)
 
-from Data_process.utils import train_validation_split,EA,few_shot_data
+from Data_process.utils import train_validation_split, EA, few_shot_data
 
-class eeg_dataset(Dataset):
+class EEGDataset(Dataset):
     '''
     A class need to input the Dataloader in the pytorch.
     '''
     def __init__(self,feature,label,domain = None,domain_label =  False):
-        super(eeg_dataset,self).__init__()
+        super(EEGDataset,self).__init__()
         self.domain_label = domain_label
         self.feature = feature
         self.label = label
@@ -135,7 +135,7 @@ def get_test_EEG_data(sub,data_path):
     test_x = test_data['x_data']
     test_y = test_data['y_data']
     test_x,test_y = torch.FloatTensor(test_x),torch.LongTensor(test_y).reshape(-1)
-    test_dataset = eeg_dataset(test_x,test_y)
+    test_dataset = EEGDataset(test_x,test_y)
     return test_dataset
 
 def get_HO_EEG_data(sub,data_path,validation_size=0.2,data_seed=20210902):
@@ -163,9 +163,9 @@ def get_HO_EEG_data(sub,data_path,validation_size=0.2,data_seed=20210902):
     split_train_x,split_train_y = torch.FloatTensor(split_train_x),torch.LongTensor(split_train_y).reshape(-1)
     split_validation_x,split_validation_y = torch.FloatTensor(split_validation_x),torch.LongTensor(split_validation_y).reshape(-1)
    
-    train_dataset = eeg_dataset(train_x,train_y)
-    split_train_dataset = eeg_dataset(split_train_x,split_train_y)
-    split_validation_dataset = eeg_dataset(split_validation_x,split_validation_y)    
+    train_dataset = EEGDataset(train_x,train_y)
+    split_train_dataset = EEGDataset(split_train_x,split_train_y)
+    split_validation_dataset = EEGDataset(split_validation_x,split_validation_y)    
     test_dataset = get_test_EEG_data(sub,data_path)
     
     return train_dataset,split_train_dataset,split_validation_dataset,test_dataset
@@ -221,7 +221,7 @@ def get_CV_EEG_data(sub,data_path,k=10,validation_size=0.2,data_seed=20210902,al
         split_validation_x = torch.FloatTensor(split_validation_x)
         split_validation_y = torch.LongTensor(split_validation_y)
         
-        yield eeg_dataset(train_x,train_y),eeg_dataset(split_train_x,split_train_y),eeg_dataset(split_validation_x,split_validation_y),eeg_dataset(test_x,test_y)
+        yield EEGDataset(train_x,train_y),EEGDataset(split_train_x,split_train_y),EEGDataset(split_validation_x,split_validation_y),EEGDataset(test_x,test_y)
 
 def get_HOCV_EEG_data(sub,data_path,k=5,data_seed=20210902):
     
@@ -255,8 +255,8 @@ def get_HOCV_EEG_data(sub,data_path,k=5,data_seed=20210902):
         split_train_x,split_train_y = torch.FloatTensor(split_train_x),torch.LongTensor(split_train_y).reshape(-1)
         split_validation_x,split_validation_y = torch.FloatTensor(split_validation_x),torch.LongTensor(split_validation_y).reshape(-1)
    
-        split_train_dataset = eeg_dataset(split_train_x,split_train_y)
-        split_validation_dataset = eeg_dataset(split_validation_x,split_validation_y)    
+        split_train_dataset = EEGDataset(split_train_x,split_train_y)
+        split_validation_dataset = EEGDataset(split_validation_x,split_validation_y)    
         # test_dataset = get_test_EEG_data(sub,data_path)
     
         yield split_train_dataset,split_validation_dataset
@@ -305,7 +305,7 @@ def get_CSE_unsupervised_data(sub,data_path,Tr_size = 0.25,Eu_ai = False,random 
     source_feature = torch.FloatTensor(source_feature)
     source_label = torch.LongTensor(source_label).reshape(-1)
     
-    return eeg_dataset(source_feature,source_label),eeg_dataset(target_train_x,target_train_y),eeg_dataset(target_test_x,target_test_y)
+    return EEGDataset(source_feature,source_label),EEGDataset(target_train_x,target_train_y),EEGDataset(target_test_x,target_test_y)
 
 def get_CSU_EEG_data(sub,data_path,use_all_source = False,split = False,target_mix = False,few_shot = False,few_shot_number = None):
             

@@ -105,9 +105,10 @@ class LitEEGPTCausal(pl.LightningModule):
     def forward(self, x):
         # print(x.shape) # B, C, T
         B, C, T = x.shape
-        
+
         x = x.to(torch.float)
-        
+
+        # channel normalisation (subtracting mean) 
         x = x - x.mean(dim=-2, keepdim=True)
         
         x = x[:,channels_index,:]
@@ -244,17 +245,27 @@ batch_size=64
 max_epochs = 100
 
 
-
 all_subjects = [1,2,3,4,5,6,7,9,11]
-for i,sub in enumerate(all_subjects):
-    sub_train = [f".sub{x}" for x in all_subjects if x!=sub]
-    sub_valid = [f".sub{sub}"]
-    print(sub_train, sub_valid)
-    train_dataset = torchvision.datasets.DatasetFolder(root="../datasets/downstream/PhysioNetP300", loader=torch.load, extensions=sub_train)
-    valid_dataset = torchvision.datasets.DatasetFolder(root="../datasets/downstream/PhysioNetP300", loader=torch.load, extensions=sub_valid)
 
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, num_workers=8, shuffle=True)
-    valid_loader = torch.utils.data.DataLoader(valid_dataset, batch_size=batch_size, num_workers=8, shuffle=False)
+for i, sub in enumerate(all_subjects):
+    sub_train = [f".sub{x}" for x in all_subjects if x != sub]
+    sub_valid = [f".sub{sub}"]
+
+    train_dataset = torchvision.datasets.DatasetFolder(
+        root="../datasets/downstream/PhysioNetP300",
+        loader=torch.load, extensions=sub_train
+    )
+    valid_dataset = torchvision.datasets.DatasetFolder(
+        root="../datasets/downstream/PhysioNetP300",
+        loader=torch.load, extensions=sub_valid
+    )
+
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset, batch_size=batch_size,
+        num_workers=8, shuffle=True)
+    valid_loader = torch.utils.data.DataLoader(
+        valid_dataset, batch_size=batch_size,
+        num_workers=8, shuffle=False)
 
     steps_per_epoch = math.ceil(len(train_loader))
     
@@ -266,11 +277,14 @@ for i,sub in enumerate(all_subjects):
     lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval='epoch')
     callbacks = [lr_monitor]
     max_lr = 8e-4
-    trainer = pl.Trainer(accelerator='cuda',
-                max_epochs=max_epochs, 
-                callbacks=callbacks,
-                enable_checkpointing=False,
-                logger=[pl_loggers.TensorBoardLogger('./logs/', name="EEGPT_PhysioP300_tb", version=f"subject{sub}"), 
-                        pl_loggers.CSVLogger('./logs/', name="EEGPT_PhysioP300_csv")])
+    trainer = pl.Trainer(
+        accelerator='cuda',
+        max_epochs=max_epochs, 
+        callbacks=callbacks,
+        enable_checkpointing=False,
+        logger=[
+            pl_loggers.TensorBoardLogger('./logs/', name="EEGPT_PhysioP300_tb", version=f"subject{sub}"),
+            pl_loggers.CSVLogger('./logs/', name="EEGPT_PhysioP300_csv")
+    ])
 
     trainer.fit(model, train_loader, valid_loader, ckpt_path='last')

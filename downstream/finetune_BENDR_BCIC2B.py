@@ -194,7 +194,7 @@ data_path = "../datasets/downstream/Data/BCIC_2b_0_38HZ/"
 # load configs
 for sub in range(1,10):
 
-    train_dataset,valid_dataset,test_dataset = get_data(sub,data_path,1,False, use_channels=use_channels)
+    train_dataset,valid_dataset,test_dataset = get_data_BCIC(sub,data_path,1,False, use_channels=use_channels)
         
     global max_epochs
     global steps_per_epoch
