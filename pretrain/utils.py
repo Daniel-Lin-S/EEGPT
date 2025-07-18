@@ -3,6 +3,8 @@ import torch
 import random
 import os
 import numpy as np
+from typing import List, Dict
+
 
 def InfoNCELoss(pred, target, t=0.):
     # B, NC, D
@@ -153,6 +155,7 @@ def grad_logger(named_params):
                     stats.first_layer = grad_norm
     if stats.first_layer is None or stats.last_layer is None:
         stats.first_layer = stats.last_layer = 0.
+
     return stats
 
 class WarmupCosineSchedule(object):
@@ -222,12 +225,110 @@ class CosineWDSchedule(object):
                 group['weight_decay'] = new_wd
         return new_wd
 
-def seed_torch(seed=1029):
-	random.seed(seed)
-	os.environ['PYTHONHASHSEED'] = str(seed) # 为了禁止hash随机化，使得实验可复现
-	np.random.seed(seed)
-	torch.manual_seed(seed)
-	torch.cuda.manual_seed(seed)
-	torch.cuda.manual_seed_all(seed) # if you are using multi-GPU.
-	torch.backends.cudnn.benchmark = False
-	torch.backends.cudnn.deterministic = True
+def seed_torch(seed: int=1029):
+    """
+    Fix all random seeds for reproducibility.
+
+    Parameters
+    ----------
+    seed : int, optional
+        Random seed to use. Default is 1029.
+    """
+    random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed) # if you are using multi-GPU.
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+
+
+def load_fn(x: str) -> torch.Tensor:
+    """
+    Load EDF file and return a tensor of shape (1, 1024, 256)
+    with random window of length 4s.
+
+    Parameters
+    ----------
+    x : str
+        Path to the EDF file.
+    
+    Returns
+    -------
+    torch.Tensor
+        A tensor of shape (1, 1024, 256)
+        containing a random window of data.
+    """
+    x = torch.load(x)
+    
+    window_length = 4*256  
+    data_length = x.shape[1]  
+
+    # Calculate the maximum starting index for the windows
+    max_start_index = data_length - window_length
+
+    # Generate random indices
+    if max_start_index>0:
+        index = random.randint(0, max_start_index)
+        x = x[:, index:index+window_length]
+    x = x.to(torch.float)
+
+    return x
+
+
+def get_config(
+        embed_dim: int,
+        embed_num: int,
+        depth: List[int],
+        num_heads: int
+    ) -> Dict[str, dict]:
+    """
+    Turn the model parameters into a dictionary
+    for encoder, predictor and reconstructor.
+
+    Parameters
+    ----------
+    embed_dim : int
+        Dimension of the embeddings. (positional and channel)
+    embed_num : int
+        Number of output tokens.
+    depth : List[int]
+        Depth of the encoder, predictor and reconstructor.
+        Should be a list of three integers.
+    num_heads : int
+        Number of attention heads in the transformer
+        blocks.
+    
+    Returns
+    -------
+    Dict[str, dict]
+        A dictionary with keys 'encoder', 'predictor',
+        and 'reconstructor', each containing a dictionary
+        with the model parameters.
+    """
+    
+    models_configs = {
+            'encoder': {
+                    'embed_dim': embed_dim,
+                    'embed_num': embed_num,
+                    'depth': depth[0],
+                    'num_heads': num_heads,
+                },
+            'predictor': {
+                    'embed_dim': embed_dim,
+                    'embed_num': embed_num,
+                    'predictor_embed_dim': embed_dim,
+                    'depth': depth[1],
+                    'num_heads': num_heads,
+                },
+            'reconstructor': {
+                    'embed_dim': embed_dim,
+                    'embed_num': embed_num,
+                    'reconstructor_embed_dim': embed_dim,
+                    'depth': depth[2],
+                    'num_heads': num_heads,
+                },
+    }
+
+    return models_configs

@@ -23,7 +23,7 @@ logger = getLogger()
 
 # A global dictionary to map channel names to indices.
 # Used to align multiple EEG datasets with different channel names.
-CHANNEL_DICT = {k.upper():v for v,k in enumerate(
+CHANNEL_DICT = {k.upper():v for v, k in enumerate(
                      [      'FP1', 'FPZ', 'FP2', 
                         "AF7", 'AF3', 'AF4', "AF8", 
             'F7', 'F5', 'F3', 'F1', 'FZ', 'F2', 'F4', 'F6', 'F8', 
@@ -41,7 +41,6 @@ def _no_grad_trunc_normal_(
     ):
     """
     Cut & paste from PyTorch official master until it's in a few official releases - RW
-    Method based on https://people.sc.fsu.edu/~jburkardt/presentations/truncated_normal.pdf
     """
     def norm_cdf(x):
         return (1. + math.erf(x / math.sqrt(2.))) / 2.
@@ -96,13 +95,19 @@ def trunc_normal_(
     -------
     torch.Tensor
         The input tensor filled with values from the truncated normal distribution.
+
+    Reference
+    ---------
+    This function is based on the method described in the paper:
+    https://people.sc.fsu.edu/~jburkardt/presentations/truncated_normal.pdf
     """
     return _no_grad_trunc_normal_(tensor, mean, std, a, b)
 
 
 def apply_mask(mask: torch.Tensor, x: torch.Tensor):
     """
-    Apply a mask to a tensor x, keeping only the patches specified by the mask.
+    Apply a mask to a 4D tensor x,
+    keeping only the patches specified by the mask.
 
     Parameters
     ----------
@@ -127,27 +132,48 @@ def apply_mask(mask: torch.Tensor, x: torch.Tensor):
     if len(mask.shape)==2:
         mN, mC = mask.shape
 
-        mask_keep = mask.reshape((1,mN*mC,1)).repeat((B, 1, D))
-        masked_x = torch.gather(x.reshape((B, N*C, D)), dim=-2, index=mask_keep)
-        masked_x = masked_x.contiguous().view((B,mN,mC,D))
+        mask_keep = mask.reshape((1,mN * mC,1)).repeat((B, 1, D))
+        masked_x = torch.gather(
+            x.reshape((B, N * C, D)), dim=-2, index=mask_keep)
+        masked_x = masked_x.contiguous().view((B, mN, mC, D))
     else:
         mN = mask.shape[0]
 
         mask_keep = mask.reshape((1,mN,1)).repeat((B, 1, D))
-        masked_x = torch.gather(x.reshape((B, N*C, D)), dim=-2, index=mask_keep)
+        masked_x = torch.gather(
+            x.reshape((B, N * C, D)), dim=-2, index=mask_keep)
 
     return masked_x
 
-def apply_mask_t(mask_t, x):
+def apply_mask_t(mask_t: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
     """
-    :param x: tensor of shape [B (batch-size), N (num-patches), C, D (feature-dim)]
-    :param mask: tensor [mN, mC] containing indices of patches in [N, C] to keep 
-    """    
-    B, N, D = x.shape
+    Apply a temporal mask to a 3D tensor x,
+    keeping only the patches specified by the mask.
+
+    Parameters
+    ----------
+    mask_t : torch.Tensor
+        A tensor of shape [mN] containing indices of
+        patches in [N] to keep.
+        mN - number of patches to keep
+    x : torch.Tensor
+        A tensor of shape [B, N, D].
+        B - batch size
+        N - number of patches
+        D - feature dimension (dimension of the embedding)
+
+    Returns
+    -------
+    masked_x : torch.Tensor
+        A tensor of shape [B, mN, D] containing only
+        the patches specified by the mask.
+    """
+    B, _, D = x.shape
     mN = mask_t.shape[0]
     
     mask_keep = mask_t.reshape((1,mN,1)).repeat((B, 1, D))
     masked_x = torch.gather(x, dim=1, index=mask_keep)
+
     return masked_x
 
 def repeat_interleave_batch(x, B, repeat):
@@ -793,7 +819,7 @@ class EEGTransformer(nn.Module):
     """
     EEG Transformer Model for EEG data processing.
 
-    Loading pre-trained weights:
+    To load pre-trained weights:
     >>> model = EEGTransformer()
     >>> model.load_state_dict(torch.load('path_to_weights.pth'))
     >>> model.eval()  # Set to evaluation mode

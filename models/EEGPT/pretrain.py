@@ -1,10 +1,3 @@
-# Training in 256Hz data and 4s
-import sys
-import os
-sys.path.append(
-    os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-)  # Add the parent directory to the path
-
 from typing import Any, Dict, Tuple
 from pytorch_lightning.utilities.types import STEP_OUTPUT
 import torch
@@ -16,20 +9,20 @@ from functools import partial
 import random
 import copy
 
+from .schedulers import CosineWDSchedule
+from .utils import grad_logger, apply_mask
+from .configs import PRETRAIN_CHANNELS, PRETRAIN_LENGTH
+from .encoder import TransformerEncoder
+from .predictor import TransformerPredictor
+from .reconstructor import TransformerReconstructor
 
-from utils import CosineWDSchedule, grad_logger
-from modeling_pretraining import EEGTransformerPredictor, EEGTransformerReconstructor
-from configs import CHANNEL_NAMES
-from models.EEGPT.encoder import TransformerEncoder
-from models.EEGPT.utils import apply_mask
 
-
-class LitEEGPT(pl.LightningModule):
+class EEGPTPretrain(pl.LightningModule):
     """
     A PyTorch Lightning module for pretraining the EEGGPT model.
 
     The model is trained with 2 losses:
-    - reconstruction loss (MSE) for the reconstructed patches,
+    - reconstruction loss (MSE) for the reconstructed patches of EEG signal.
     - alignment loss (MSE) for the encoded representations from the target encoder
     and the main encoder.
 
@@ -71,10 +64,12 @@ class LitEEGPT(pl.LightningModule):
     """
 
     def __init__(
-            self, models_configs: dict,
+            self,
+            models_configs: dict,
             USE_LOSS_A: bool=True,
             USE_LN: bool=True,
             USE_SKIP: bool=True,
+            lr_scheduler_name: str='OneCycleLR',
             optimiser_configs: Dict[str, Any] = {},
         ):
         """
@@ -96,6 +91,8 @@ class LitEEGPT(pl.LightningModule):
             encoder if this is set to False,
             otherwise it uses the output of the predictor.
             The default is True.
+        lr_scheduler_name : str, optional
+            The type of learning rate scheduler to use.
         optimiser_configs : Dict[str, Any], optional
             Configuration for the optimizer, such as learning rate.
             The default is an empty dictionary.
@@ -105,9 +102,12 @@ class LitEEGPT(pl.LightningModule):
         self.USE_LN     = USE_LN
         self.USE_SKIP   = USE_SKIP
         self.optimiser_configs = optimiser_configs
+        self.lr_scheduler_name = lr_scheduler_name
+
+        n_channels = len(PRETRAIN_CHANNELS)
 
         encoder = TransformerEncoder(
-            img_size=[58, 256*4],
+            img_size=[n_channels, PRETRAIN_LENGTH],
             patch_size=32*2,
             mlp_ratio=4.0,
             drop_rate=0.0,
@@ -119,7 +119,7 @@ class LitEEGPT(pl.LightningModule):
             **models_configs['encoder']
         )
         
-        predictor = EEGTransformerPredictor(
+        predictor = TransformerPredictor(
             num_patches=encoder.num_patches,
             use_part_pred=True,
             mlp_ratio=4.0,
@@ -132,7 +132,7 @@ class LitEEGPT(pl.LightningModule):
             **models_configs['predictor']
         )
         
-        reconstructor = EEGTransformerReconstructor(
+        reconstructor = TransformerReconstructor(
             num_patches=encoder.num_patches,
             patch_size=32*2,
             mlp_ratio=4.0,
@@ -153,13 +153,13 @@ class LitEEGPT(pl.LightningModule):
         self.target_encoder = target_encoder
         self.predictor      = predictor
         self.reconstructor  = reconstructor
-        self.chans_id       = encoder.prepare_chan_ids(CHANNEL_NAMES)
+        self.chans_id       = encoder.prepare_chan_ids(PRETRAIN_CHANNELS)
         
         self.loss_fn        = torch.nn.MSELoss()
 
     def make_masks(
             self,
-            num_patchs : Tuple[int, int],
+            num_patchs: Tuple[int, int],
             mC_x: int=12,
             p_n_y: float=0.5,
             p_c_y: float=0.2
@@ -190,20 +190,22 @@ class LitEEGPT(pl.LightningModule):
         mask_x : torch.Tensor
             A tensor containing the indices of the patches
             to keep for the input.
+            (Indices should be in the range [0, N*C-1])
             Shape: (mN_x, mC_x)
-            mN_x - number of temporal segments to keep in the input,
+            mN_x - number of temporal windows to keep in the input,
             mC_x - number of channels to keep in the input.
+            So mT_x * mC_x patches are kept in the input.
         mask_y : torch.Tensor
             A tensor containing the indices of the patches
             on which to compute the reconstruction loss.
-            Shape: (mN_y,),
-            mN_y - number of patches to predict.
+            Shape: (mP_y,),
+            mP_y - number of patches to predict.
         """
 
         C, N = num_patchs
 
         while True:
-            mask_x = []   # mN, mC
+            mask_x = []
             mask_y = []
             mask_y_bx = []
 
@@ -226,7 +228,7 @@ class LitEEGPT(pl.LightningModule):
 
             break
         
-        return torch.stack(mask_x, dim=0), torch.cat(mask_y+[mask_y_bx], dim=0)
+        return torch.stack(mask_x, dim=0), torch.cat(mask_y + [mask_y_bx], dim=0)
 
     def forward_target(
             self, x: torch.Tensor, mask_y: torch.Tensor
@@ -245,9 +247,8 @@ class LitEEGPT(pl.LightningModule):
             T - number of patches.
         mask_y : torch.Tensor
             Mask tensor indicating which patches to predict,
-            with shape (mN_y, mC_y),
-            mN_y - number of patches to predict,
-            mC_y - number of channels to predict.
+            with shape (mP_y),
+            mP_y - number of patches to predict.
 
         Returns
         -------
@@ -260,7 +261,9 @@ class LitEEGPT(pl.LightningModule):
         y : torch.Tensor
             Masked patches of the input tensor,
             containing only the patches specified by the mask.
-            Shape: (B, mN_y, mC_y, D).
+            Shape: (B, mP_y, bC*bT),
+            bC - number of channels in each patch,
+            bN - number of timepoints in each patch.
             If `USE_LN` is True, the tensor is normalised.
         """
         with torch.no_grad():
@@ -282,7 +285,7 @@ class LitEEGPT(pl.LightningModule):
             x = x.view(x.shape[0], C, block_size_c, N, block_size_n)
             # Re-arrange dimensions to use `apply_mask`
             x = x.permute(0, 3, 1, 2, 4).contiguous()
-            x = x.view(x.shape[0], C, N, block_size_c * block_size_n)   # (B, C, N, D)
+            x = x.view(x.shape[0], C, N, block_size_c * block_size_n)   # (B, C, N, bC*bT)
             y = apply_mask(mask_y.to(x.device), x)
 
             if self.USE_LN:
@@ -314,9 +317,8 @@ class LitEEGPT(pl.LightningModule):
             mC_x - number of channels to keep in the input.
         mask_y : torch.Tensor
             Mask tensor indicating which patches to predict,
-            with shape (mN_y, mC_y),
-            mN_y - number of patches to predict,
-            mC_y - number of channels to predict.
+            with shape (mP_y,),
+            mP_y - number of patches to predict.
 
         Returns
         -------
@@ -325,10 +327,13 @@ class LitEEGPT(pl.LightningModule):
         r : torch.Tensor
             Reconstructed patches of the input tensor,
             containing only the patches specified by the mask_y.
-            Shape: (B, mN_y, mC_y, D).
+            Shape: (B, mP_y, bC*bT),
+            bC - number of channels in each patch,
+            bN - number of timepoints in each patch.
         """
         z = self.encoder(
             x, self.chans_id.to(x), mask_x=mask_x)
+
         z, comb_z = self.predictor(z, mask_x=mask_x)
 
         if not self.USE_SKIP:
@@ -340,28 +345,53 @@ class LitEEGPT(pl.LightningModule):
 
         return z, r
     
-    def validation_step(self, batch, batch_idx):
+    def validation_step(
+            self,
+            batch: Tuple[torch.Tensor, torch.Tensor],
+            batch_idx: int
+        ) -> torch.Tensor:
+        """
+        Validation step for the model.
+
+        Parameters
+        ----------
+        batch : Tuple[torch.Tensor, torch.Tensor]
+            A batch of data containing input tensors and labels.
+            But only the input tensors are used in the validation step.
+            (self-supervised learning)
+        batch_idx : int
+            The index of the batch in the current epoch.
+            A placeholder for the PyTorch Lightning API,
+
+        Returns
+        -------
+        loss : torch.Tensor
+            The computed loss for the batch.
+        """
         x, _ = batch
         mask_x, mask_y = self.make_masks(self.encoder.num_patches)
         h, y = self.forward_target(x, mask_y)
         z, r = self.forward_context(x, mask_x, mask_y)
 
-        loss_align = self.loss_fn(h, z)
         loss_recon = self.loss_fn(y, r)
 
         if self.USE_LOSS_A:
+            loss_align = self.loss_fn(h, z)
+
             loss  = loss_align + loss_recon
         else:
             loss  = loss_recon
 
-        self.log(
-            'valid_loss_align', loss_align,
-            on_epoch=True, on_step=False, sync_dist=True
-        )
-        self.log(
-            'valid_loss_recon', loss_recon,
-            on_epoch=True, on_step=False, sync_dist=True
-        )
+        if self.USE_LOSS_A:
+            self.log(
+                'valid_loss_align', loss_align,
+                on_epoch=True, on_step=False, sync_dist=True
+            )
+            self.log(
+                'valid_loss_recon', loss_recon,
+                on_epoch=True, on_step=False, sync_dist=True
+            )
+
         self.log(
             'valid_loss', loss,
             on_epoch=True, on_step=False, sync_dist=True
@@ -370,8 +400,9 @@ class LitEEGPT(pl.LightningModule):
         return loss
     
     def training_step(
-            self, batch, batch_idx
-        ):
+            self, batch: Tuple[torch.Tensor, torch.Tensor],
+            batch_idx: int
+        ) -> torch.Tensor:
         """
         Training step for the model.
 
@@ -396,22 +427,25 @@ class LitEEGPT(pl.LightningModule):
         mask_x, mask_y = self.make_masks(self.encoder.num_patches)
         h, y = self.forward_target(x, mask_y)
         z, r = self.forward_context(x, mask_x, mask_y)
-        loss_align = self.loss_fn(h, z)
+
         loss_recon = self.loss_fn(y, r)
         if self.USE_LOSS_A:
+            loss_align = self.loss_fn(h, z)
             loss  = loss_align + loss_recon
         else:
             loss  = loss_recon
         
         # Logging the losses (across all GPUs)
-        self.log(
-            'train_alignmengt_loss', loss_align,
-            on_epoch=True, on_step=False, sync_dist=True
-        )
-        self.log(
-            'train_loss_recon', loss_recon,
-            on_epoch=True, on_step=False, sync_dist=True
-        )
+        if self.USE_LOSS_A:
+            self.log(
+                'train_alignmengt_loss', loss_align,
+                on_epoch=True, on_step=False, sync_dist=True
+            )
+            self.log(
+                'train_loss_recon', loss_recon,
+                on_epoch=True, on_step=False, sync_dist=True
+            )
+
         self.log(
             'train_loss', loss,
             on_epoch=True, on_step=False, sync_dist=True
@@ -484,7 +518,13 @@ class LitEEGPT(pl.LightningModule):
         return super().on_train_batch_end(outputs, batch, batch_idx)
     
     
-    def on_load_checkpoint(self, checkpoint: Dict[str, Any]) -> None:
+    def on_load_checkpoint(
+            self, checkpoint: Dict[str, Any]
+        ) -> None:
+        """
+        Called when a checkpoint is loaded.
+        Recofigure the optimizers.
+        """
         res = super().on_load_checkpoint(checkpoint)
 
         self.configure_optimizers()
@@ -540,6 +580,7 @@ class LitEEGPT(pl.LightningModule):
             **self.optimiser_configs
         )
         # lr_scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer, factor=1.)
+
         lr_dict = {
             'scheduler': lr_scheduler,
             'interval': 'step',  # Whether to update every 'step' or 'epoch'
@@ -570,26 +611,3 @@ class LitEEGPT(pl.LightningModule):
         return (
             {'optimizer': optimizer, 'lr_scheduler': lr_dict},
         ) 
-
-
-# TODO debugging
-if __name__ == '__main__':
-    from configs import MODELS_CONFIGS
-    from utils import get_config
-
-    model = LitEEGPT(MODELS_CONFIGS['tiny1'])
-    B, C, T = 2, 58, 256*4
-    x = torch.randn(B, C, T)
-
-    mask_x, mask_y = model.make_masks(model.encoder.num_patches)
-    print('Shape of mask_x:', mask_x.shape)
-    print('Shape of mask_y:', mask_y.shape)
-
-    h, y = model.forward_target(x, mask_y)
-    print('Shape of h:', h.shape)
-    print('Shape of y:', y.shape)
-
-    z, r = model.forward_context(x, mask_x, mask_y)
-    print('Shape of z:', z.shape)
-    print('Shape of r:', r.shape)
-
