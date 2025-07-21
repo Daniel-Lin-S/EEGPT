@@ -50,3 +50,75 @@ class CosineWDSchedule(object):
             if ('WD_exclude' not in group) or not group['WD_exclude']:
                 group['weight_decay'] = new_wd
         return new_wd
+
+
+class WarmupCosineSchedule(object):
+    """
+    Warmup and cosine decay learning rate scheduler.
+    This scheduler first linearly increases the learning rate
+    from a starting value to a reference value over a specified
+    number of warmup steps, and then applies a cosine decay
+    to the learning rate for the remaining steps.
+    """
+
+    def __init__(
+        self,
+        optimizer: Optimizer,
+        warmup_steps: int,
+        start_lr: float,
+        ref_lr: float,
+        T_max: int,
+        final_lr: float=0.
+    ):
+        """
+        Parameters
+        ----------
+        optimizer : torch.optim.Optimizer
+            The optimizer to apply the learning rate schedule to.
+        warmup_steps : int
+            The number of steps for the warmup phase.
+        start_lr : float
+            The initial learning rate at the start of the warmup phase.
+        ref_lr : float
+            The reference learning rate to reach at
+            the end of the warmup phase.
+        T_max : int
+            The total number of steps for the cosine decay phase,
+            excluding the warmup steps.
+        final_lr : float, optional
+            The final learning rate to reach at the end of the schedule
+            (default is 0.0).
+        """
+        self.optimizer = optimizer
+        self.start_lr = start_lr
+        self.ref_lr = ref_lr
+        self.final_lr = final_lr
+        self.warmup_steps = warmup_steps
+        self.T_max = T_max - warmup_steps
+        self._step = 0.
+
+    def step(self) -> float:
+        """
+        Step the scheduler to update the learning rate.
+    
+        Return
+        ------
+        float
+            The new learning rate after the step.
+        """
+        self._step += 1
+        if self._step < self.warmup_steps:
+            progress = float(self._step) / float(max(1, self.warmup_steps))
+            new_lr = self.start_lr + progress * (self.ref_lr - self.start_lr)
+        else:
+            # -- progress after warmup
+            progress = float(self._step - self.warmup_steps) / float(max(1, self.T_max))
+            new_lr = max(
+                self.final_lr,
+                self.final_lr + (self.ref_lr - self.final_lr) * 0.5 * (
+                    1. + math.cos(math.pi * progress)))
+
+        for group in self.optimizer.param_groups:
+            group['lr'] = new_lr
+
+        return new_lr
