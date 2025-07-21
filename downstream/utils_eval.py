@@ -28,6 +28,7 @@ def get_avg_results(results):
         avg_result[k][0] /= avg_result[k][1]   
     return avg_result
 
+
 class SmoothedValue(object):
     """Track a series of values and provide access to smoothed values over a
     window or the global series average.
@@ -88,6 +89,7 @@ class SmoothedValue(object):
             global_avg=self.global_avg,
             max=self.max,
             value=self.value)
+
 
 class MetricLogger(object):
     def __init__(self, delimiter="\t"):
@@ -172,9 +174,11 @@ class MetricLogger(object):
         print('{} Total time: {} ({:.4f} s / it)'.format(
             header, total_time_str, total_time / len(iterable)))
 
+
 def get_metrics(output, target, metrics, is_binary, threshold=0.5):
     if is_binary:
-        if 'roc_auc' not in metrics or sum(target) * (len(target) - sum(target)) != 0:  # to prevent all 0 or all 1 and raise the AUROC error
+        if 'roc_auc' not in metrics or sum(target) * (
+            len(target) - sum(target)) != 0:  # to prevent all 0 or all 1 and raise the AUROC error
             results = binary_metrics_fn(
                 target,
                 output,

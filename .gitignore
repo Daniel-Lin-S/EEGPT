@@ -3,5 +3,6 @@ figures
 Raw_data
 Data
 logs
-downstream/*.sh
+*.sh
 __pycache__
+_*.py

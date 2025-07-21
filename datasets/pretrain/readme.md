@@ -35,7 +35,7 @@ NOTE: Ensure there is no other type files (.pdf, .txt, etc) in the folder.
 
 Download URL: https://aistudio.baidu.com/aistudio/datasetdetail/151025/0
 
-In order to use this dataset, the download dataset folder aistudio is required, save it to 'aistudio' folder, containing the following files:
+In order to use this dataset, the download dataset folder aistudio is required, save it to 'M3CV' folder, containing the following files:
 
 ```
 Calibration_Info.csv

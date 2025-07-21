@@ -5,9 +5,75 @@ import pytorch_lightning as pl
 from typing import List, Tuple
 from abc import ABC, abstractmethod
 
-from Modules.models.EEGPT_mcae import EEGTransformer
-from Modules.Network.utils import Conv1dWithConstraint, LinearWithConstraint
-from utils_eval import get_metrics
+from EEGPT.encoder import TransformerEncoder
+from layers.constrained_layers import Conv1dWithConstraint, LinearWithConstraint
+from pyhealth.metrics import binary_metrics_fn, multiclass_metrics_fn
+
+
+def get_metrics(
+        output : torch.Tensor,
+        target: torch.Tensor,
+        metrics: List[str],
+        is_binary: bool,
+        threshold: float=0.5
+    ) -> dict:
+    """
+    Computes evaluation metrics for classification tasks.
+
+    Parameters
+    ----------
+    output : torch.Tensor
+        The predicted outputs from the model.
+        Shape: (B, num_classes) for multiclass,
+        or (B,) for binary classification.
+    target : torch.Tensor
+        The ground truth labels for the classification task.
+        Shape: (B,) for both binary and multiclass classification.
+    metrics : List[str]
+        A list of metrics to compute.
+        Supported metrics include 'accuracy', 'balanced_accuracy',
+        'cohen_kappa', 'f1_weighted', 'f1_macro', 'f1_micro',
+        'roc_auc', and 'pr_auc'.
+    is_binary : bool
+        A boolean indicating whether the task is binary classification.
+        If True, the function will compute binary metrics.
+        If False, it will compute multiclass metrics.
+    threshold : float, optional
+        The threshold for binary classification to convert probabilities
+        into binary predictions. Default is 0.5.
+
+    Returns
+    -------
+    results : dict
+        A dictionary containing the computed metrics.
+        The keys are the metric names, and the values are the computed scores.
+        If the task is binary classification and the output
+        contains all zeros or all ones, and roc_auc is in the metrics,
+        it returns zeros for the metrics.
+    """
+    if is_binary:
+        # to prevent all 0 or all 1 and raise the AUROC error
+        if 'roc_auc' not in metrics or sum(target) * (
+            len(target) - sum(target)) != 0:  
+            results = binary_metrics_fn(
+                target,
+                output,
+                metrics=metrics,
+                threshold=threshold,
+            )
+        else:
+            results = {
+                "accuracy": 0.0,
+                "balanced_accuracy": 0.0,
+                "pr_auc": 0.0,
+                "roc_auc": 0.0,
+            }
+    else:
+        results = multiclass_metrics_fn(
+            target, output, metrics=metrics
+        )
+
+    return results
 
 
 class Classifier(pl.LightningModule, ABC):
@@ -441,7 +507,7 @@ class EEGPTLinearClassifier(Classifier):
         # init model
         num_patches = (input_length - patch_size) // patch_size + 1
 
-        target_encoder = EEGTransformer(
+        target_encoder = TransformerEncoder(
             img_size=[self.chans_num, input_length],
             patch_size=patch_size,
             embed_num=embed_num,

@@ -30,10 +30,10 @@ import math
 import argparse
 from functools import partial
 
-from downstream.classifiers import (
+from models.classifiers import (
     EEGPTLinearClassifier, BaselineLinearClassifier
 )
-from utils import set_seed, get_data_BCIC, get_data_PhysioP300
+from downstream.utils import set_seed, get_data_BCIC, get_data_PhysioP300
 
 
 # to load the public version of EEGPT, these parameters CANNOT be changed
