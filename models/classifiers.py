@@ -1,13 +1,13 @@
 import torch
 import torch.nn.functional as F
 import pytorch_lightning as pl
-
 from typing import List, Tuple
 from abc import ABC, abstractmethod
-
-from EEGPT.encoder import TransformerEncoder
-from layers.constrained_layers import Conv1dWithConstraint, LinearWithConstraint
 from pyhealth.metrics import binary_metrics_fn, multiclass_metrics_fn
+
+from .EEGPT.encoder import TransformerEncoder
+from .layers.constrained_layers import Conv1dWithConstraint, LinearWithConstraint
+
 
 
 def get_metrics(

@@ -29,11 +29,13 @@ from pytorch_lightning.callbacks import (
 import math
 import argparse
 from functools import partial
+import os
 
 from models.classifiers import (
     EEGPTLinearClassifier, BaselineLinearClassifier
 )
-from downstream.utils import set_seed, get_data_BCIC, get_data_PhysioP300
+from utils import seed_torch
+from utils.dataset_utils import get_data_BCIC, get_data_PhysioP300
 
 
 # to load the public version of EEGPT, these parameters CANNOT be changed
@@ -49,6 +51,9 @@ EEGPT_pretrain_settings = {
     'qkv_bias': True,
     'norm_layer' : partial(nn.LayerNorm, eps=1e-6)
 }
+
+dataset_choices = ['BCIC2A', 'BCIC2B', 'PhysioP300']
+backbone_choices = ['EEGPT', 'None']
 
 
 def parse_args():
@@ -80,7 +85,7 @@ def parse_args():
     # ------ Dataset Parameters ------
     parser.add_argument(
         "--dataset", type=str, required=True,
-        choices=["BCIC2A", "BCIC2B", "PhysioP300"],
+        choices=dataset_choices,
         help="Dataset to use for training. "
     )
     parser.add_argument(
@@ -114,7 +119,7 @@ def parse_args():
     # ------ Training parameters ------
     parser.add_argument(
         "--backbone", type=str, default="EEGPT",
-        choices=["EEGPT", "None"],
+        choices=backbone_choices,
         help="Backbone model to use for linear probing. "
     )
     parser.add_argument(
@@ -163,7 +168,7 @@ def parse_args():
 
 
 args = parse_args()
-set_seed(args.seed)
+seed_torch(args.seed)
 
 if args.backbone == "EEGPT":
     model_name = 'EEGPT'
@@ -176,6 +181,8 @@ print(
     ), flush=True
 )
 
+if not os.path.exists(args.log_dir):
+    os.makedirs(args.log_dir)
 
 for i in range(1, args.n_subjects+1):
     if "BCIC" in args.dataset:
@@ -191,7 +198,7 @@ for i in range(1, args.n_subjects+1):
     else:
         raise ValueError(
             f"Unknown dataset: {args.dataset}. "
-            "Allowed choices: ['BCIC2A', 'BCIC2B', 'PhysioP300']"
+            f"Allowed choices: {dataset_choices}"
         )
 
     total_samples = len(train_dataset) + len(valid_dataset) + len(test_dataset)
@@ -252,7 +259,7 @@ for i in range(1, args.n_subjects+1):
     else:
         raise ValueError(
             f"Unknown backbone: {args.backbone}"
-            "Allowed choices: ['EEGPT', 'None']"
+            f"Allowed choices: {backbone_choices}"
         )
 
     lr_monitor = LearningRateMonitor(
@@ -261,7 +268,7 @@ for i in range(1, args.n_subjects+1):
     early_stopping = EarlyStopping(
         monitor="valid_loss",
         patience=args.patience,
-        mode="min",    # "min" for minimising the monitored metric
+        mode="min",    # minimising the monitored metric
         verbose=True
     )
 

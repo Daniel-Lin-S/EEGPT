@@ -21,7 +21,7 @@ from typing import Any
 import math
 
 
-from utils import set_seed, read_kaggle_ern_train, read_kaggle_ern_test
+from .utils import set_seed, read_kaggle_ern_train, read_kaggle_ern_test
 
 
 def seed_torch(seed=1029):

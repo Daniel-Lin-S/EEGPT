@@ -62,6 +62,12 @@ pip install -r requirements.txt
 ./finetune_TUEV_EEGPT.sh
 ```
 
+## Channels for EEGPT
+BCIC2A: FP1 FP2 F7 F3 FZ F4 F8 T7 C3 CZ C4 T8 P7 P3 PZ P4 P8 O1 O2 
+BCIC2B: C5 C3 C1 CZ C2 C4 C6
+SleepEDF: F3 F4 C3 C4 P3 P4 FPZ FZ CZ CPZ PZ POZ OZ
+KaggleERN: FP1 FP2 F7 F3 FZ F4 F8 T7 C3 CZ C4 T8 P7 P3 PZ P4 P8 O1 O2
+
 ## OTHER DOWNSTREAM TASKS
 
 To train other downstream tasks,

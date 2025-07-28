@@ -5,4 +5,4 @@ Data
 logs
 *.sh
 __pycache__
-_*.py
+local_*.py
